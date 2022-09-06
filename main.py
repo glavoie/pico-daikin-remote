@@ -4,7 +4,7 @@ import socket
 import time
 from machine import Pin, PWM
 
-from daikinremote import ac_on, ac_off
+from daikinremote import send_state
 from config import SSID, PASSWORD
 
 led = Pin('LED')
@@ -62,10 +62,35 @@ while True:
 
         print("Line: " + line)
 
-        if line.find('/on') > -1:
-            ac_on()
-        elif line.find('/off') > -1:
-            ac_off()
+        query = ''
+        url = ''
+        path = ''
+        query_params = {}
+        if line.find('GET') > -1:
+            query = line.split(' ')
+            url = query[1]
+
+            split_url = url.split('?')
+            path = split_url[0]
+            query_string = split_url[1] if len(split_url) > 1 else None
+
+            query_params = {}
+            if query_string is not None:
+                params = query_string.split("&")
+                for param_raw in params:
+                    param = param_raw.split("=")
+                    query_params[param[0]] = param[1]
+
+            print("Path is: " + path)
+            print("Params: " + str(query_params))
+
+        if path == "/state":
+            send_state(
+                query_params['power'],
+                query_params['mode'],
+                query_params['temperature'],
+                query_params['fan']
+            )
 
         while True:
             line = cl_file.readline()

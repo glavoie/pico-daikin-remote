@@ -1,8 +1,9 @@
 from machine import Pin, PWM
 import time
-import _thread
+import uctypes
 
-#DUTY_ON = 16383 # 1/4
+import daikinencoder
+
 DUTY_ON = 21843 # 1/3
 DUTY_OFF = 0
 
@@ -21,12 +22,6 @@ pwm = PWM(Pin(13))
 # Carrier frequency
 pwm.freq(38000)
 
-# COPIED MESSAGES
-
-ON_23  = [['0x11', '0xda', '0x27', '0x00', '0xc5', '0x10', '0x00', '0xe7'], ['0x11', '0xda', '0x27', '0x00', '0x42', '0xb5', '0x2c', '0x35'], ['0x11', '0xda', '0x27', '0x00', '0x00', '0x39', '0x2e', '0x00', '0xa0', '0x00', '0x00', '0x06', '0x60', '0x00', '0x00', '0xc1', '0x00', '0x00', '0x40']]
-OFF_23 = [['0x11', '0xda', '0x27', '0x00', '0xc5', '0x10', '0x00', '0xe7'], ['0x11', '0xda', '0x27', '0x00', '0x42', '0x9a', '0x2c', '0x1a'], ['0x11', '0xda', '0x27', '0x00', '0x00', '0x38', '0x2e', '0x00', '0xa0', '0x00', '0x00', '0x06', '0x60', '0x00', '0x00', '0xc1', '0x00', '0x00', '0x3f']]
-FAN    = [['0x11', '0xda', '0x27', '0x00', '0xc5', '0x10', '0x00', '0xe7'], ['0x11', '0xda', '0x27', '0x00', '0x42', '0xb4', '0x2c', '0x34'], ['0x11', '0xda', '0x27', '0x00', '0x00', '0x69', '0x32', '0x00', '0xa0', '0x00', '0x00', '0x06', '0x60', '0x00', '0x00', '0xc1', '0x00', '0x00', '0x74']]
-
 def send_code(code):
     # Sending PREAMBLE pulse
     # ... MAYBE... MAYBE NOT
@@ -38,14 +33,12 @@ def send_code(code):
         send_signal(DUTY_ON, BIT_MARK)
 
         for byte in frame:
-            h = int(byte, 16)
             for i in range(8):
-                bit = h >> i & 1
+                bit = byte >> i & 1
                 send_signal(DUTY_OFF, ONE if bit == 1 else ZERO)
                 send_signal(DUTY_ON, BIT_MARK)
         
         send_signal(DUTY_OFF, GAP)
-
 
 def send_signal(signal, length):
     pwm.duty_u16(signal)
@@ -53,10 +46,35 @@ def send_signal(signal, length):
 
     return length
 
-def ac_on():
-    send_code(FAN)
-    print("Turned ON FAN")
+def send_state(power, mode, temperature, fan):
+    state_raw = bytearray(daikinencoder.DEFAULT_STATE)
+    state = uctypes.struct(uctypes.addressof(state_raw), daikinencoder.DaikinESPProtocol, uctypes.LITTLE_ENDIAN)
 
-def ac_off():
-    send_code(OFF_23)
-    print("Turned OFF")
+    state.Power = int(power)
+
+    mode_map = {
+        "heat": daikinencoder.HEAT,
+        "cool": daikinencoder.COOL,
+        "auto": daikinencoder.AUTO,
+        "dry": daikinencoder.DRY,
+        "fan_only": daikinencoder.FAN,
+        "off": daikinencoder.FAN
+    }
+    state.Mode = mode_map[mode]
+    state.Temperature = int(temperature)
+
+    fan_map = {
+        "Auto": daikinencoder.FAN_AUTO,
+        "Quiet": daikinencoder.FAN_QUIET,
+        "1": 3,
+        "2": 4,
+        "3": 5,
+        "4": 6,
+        "5": 7
+    }
+    state.Fan = fan_map[fan]
+
+    daikinencoder.update_sum(state_raw, state)
+    daikinencoder.get_frames(state_raw)
+
+    send_code(daikinencoder.get_frames(state_raw))
