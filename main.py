@@ -1,73 +1,76 @@
-# From https://datasheets.raspberrypi.com/picow/connecting-to-the-internet-with-pico-w.pdf
 import network
-import socket
 import time
 from machine import Pin, PWM
+import uasyncio as asyncio
+import machine
 
-from daikinremote import send_state
-from config import SSID, PASSWORD
+from daikinremote import RemoteException, send_state
+from config import SSID, PASSWORD, API_KEY
 
 led = Pin('LED')
 led.value(0)
 
 wlan = network.WLAN(network.STA_IF)
-wlan.active(True)
-wlan.connect(SSID, PASSWORD)
 
-html = """<!DOCTYPE html>
-<html>
-    <head> <title>Pico W - Daikin Remote</title> </head>
-    <body> <h1>Pico W - Daikin Remote</h1>
-    <p><a href="/on">Turn ON fan</a></p>
-    <p><a href="/off">Turn OFF</a></p>
-    </body>
-</html>
-"""
+def connect_to_network():
+    print('Connecting to Network (timeout 10 seconds)...')
 
-# Wait for connect or fail
-max_wait = 10
-while max_wait > 0:
-    if wlan.status() < 0 or wlan.status() >= 3:
-        break
-    max_wait -= 1
-    print('waiting for connection...')
-    time.sleep(1)
+    wlan.active(True)
+    wlan.connect(SSID, PASSWORD)
 
-# Handle connection error
-if wlan.status() != 3:
-    raise RuntimeError('network connection failed')
-else:
-    print('connected')
-    led.value(1)
-    status = wlan.ifconfig()
-    print( 'ip = ' + status[0] )
+    # Wait for connect or fail
+    max_wait = 10
+    while max_wait > 0:
+        if wlan.status() < 0 or wlan.status() >= 3:
+            break
+        max_wait -= 1
+        time.sleep(1)
 
-# Open socket
-addr = socket.getaddrinfo('0.0.0.0', 80)[0][-1]
+    # Handle connection error
+    if wlan.status() != 3:
+        process_failed_network()
+    else:
+        blink_led(2)
 
-s = socket.socket()
-s.bind(addr)
-s.listen(1)
+        status = wlan.ifconfig()
+        print('Network online! IP: ' + status[0])
 
-print('listening on', addr)
+def process_failed_network():
+    blink_led(3)
+    print("Network connection failed... Sleeping 10 seconds then resetting!")
+    time.sleep(10)
+    machine.reset()
 
-# Listen for connections
-while True:
+def blink_led(times):
+    for i in range(times):
+        led.value(1)
+        time.sleep_ms(250)
+        led.value(0)
+        time.sleep_ms(250)
+
+async def serve_client(reader, writer):
+    response_code = 200
+    response_status = "Success"
+
     try:
-        cl, addr = s.accept()
-        print('client connected from', addr)
-        cl_file = cl.makefile('rwb', 0)
+        print("Client connected")
 
-        line = str(cl_file.readline())
+        # Capture request line
+        request_line = await reader.readline()
+        request = str(request_line)
+        print("Request:", request)
 
-        print("Line: " + line)
+        # Ignore the rest of the request
+        while await reader.readline() != b"\r\n":
+            pass
 
+        # Parse the request
         query = ''
         url = ''
         path = ''
         query_params = {}
-        if line.find('GET') > -1:
-            query = line.split(' ')
+        if request.find('GET') > -1:
+            query = request.split(' ')
             url = query[1]
 
             split_url = url.split('?')
@@ -81,26 +84,52 @@ while True:
                     param = param_raw.split("=")
                     query_params[param[0]] = param[1]
 
-            print("Path is: " + path)
-            print("Params: " + str(query_params))
-
+        # Process request
         if path == "/state":
-            send_state(
-                query_params['power'],
-                query_params['mode'],
-                query_params['temperature'],
-                query_params['fan']
-            )
+            if query_params.get('key', None) != API_KEY:
+                response_code = 401
+                response_status = "Unauthorized"
+            else:
+                try:
+                    send_state(
+                        query_params.get('power', None),
+                        query_params.get('mode', None),
+                        query_params.get('temperature', None),
+                        query_params.get('fan', None)
+                    )
+                except RemoteException as e:
+                    response_code = 500
+                    response_status = str(e)
+        else:
+            response_code = 404
+            response_status = "Not found"
+    except:
+        response_code = 500
+        response_status = "Unknown error"
+    finally:
+        # Return response
+        response = '{{"status": "{status}"}}'.format(status=response_status)
+        writer.write("HTTP/1.0 {code} OK\r\nContent-type: text/html\r\n\r\n".format(code=response_code))
+        writer.write(response)
 
-        while True:
-            line = cl_file.readline()
-            if not line or line == b'\r\n':
-                break
-        response = html
-        cl.send('HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n')
-        cl.send(response)
-        cl.close()
+        await writer.drain()
+        await writer.wait_closed()
 
-    except OSError as e:
-        cl.close()
-        print('connection closed')
+        print("Client disconnected")
+
+async def main():
+    connect_to_network()
+
+    print('Starting web server...')
+    asyncio.create_task(asyncio.start_server(serve_client, "0.0.0.0", 80))
+
+    while True:
+        await asyncio.sleep(2)
+
+        if wlan.status() != 3:
+            process_failed_network()
+
+try:
+    asyncio.run(main())
+finally:
+    asyncio.new_event_loop()
