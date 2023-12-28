@@ -49,46 +49,42 @@ pwm.freq(CARRIER_FREQ)
 class RemoteException(Exception):
     pass
 
-def send_code(code):
+def blast_code(code):
     # Sending PREAMBLE
     for i in range(6):
-        send_signal(DUTY_OFF, ZERO)
-        send_signal(DUTY_ON, BIT_MARK)
+        blast_ir_signal(DUTY_OFF, ZERO)
+        blast_ir_signal(DUTY_ON, BIT_MARK)
 
-    send_signal(DUTY_OFF, GAP)
+    blast_ir_signal(DUTY_OFF, GAP)
 
     # Sending command
     for frame in code:
-        send_signal(DUTY_ON, FRAME_START_HIGH)
-        send_signal(DUTY_OFF, FRAME_START_LOW)
-        send_signal(DUTY_ON, BIT_MARK)
+        blast_ir_signal(DUTY_ON, FRAME_START_HIGH)
+        blast_ir_signal(DUTY_OFF, FRAME_START_LOW)
+        blast_ir_signal(DUTY_ON, BIT_MARK)
 
         for byte in frame:
             for i in range(8):
                 bit = byte >> i & 1
-                send_signal(DUTY_OFF, ONE if bit == 1 else ZERO)
-                send_signal(DUTY_ON, BIT_MARK)
+                blast_ir_signal(DUTY_OFF, ONE if bit == 1 else ZERO)
+                blast_ir_signal(DUTY_ON, BIT_MARK)
         
-        send_signal(DUTY_OFF, GAP)
+        blast_ir_signal(DUTY_OFF, GAP)
 
-def send_signal(signal, length):
+def blast_ir_signal(signal, length):
     pwm.duty_u16(signal)
     time.sleep_us(length)
 
     return length
 
-def send_state(power, mode, temperature, fan):
+def blast_state(power, mode, temperature, fan):
     state_raw = bytearray(daikinencoder.DEFAULT_STATE)
     state = uctypes.struct(uctypes.addressof(state_raw), daikinencoder.DaikinESPProtocol, uctypes.LITTLE_ENDIAN)
 
-    try:
-        power_value = int(power)
-        if power_value < 0 or power_value > 1:
-            raise Exception()
-
-        state.Power = power_value
-    except:
-        raise RemoteException("Power value must be 0 or 1...")
+    if power == "on":
+        state.Power = 1
+    else:
+        state.Power = 0
 
     try:
         state.Mode = MODE_MAP[mode]
@@ -96,7 +92,7 @@ def send_state(power, mode, temperature, fan):
         raise RemoteException("Invalid mode given... Possible values: heat, cool, auto, dry, fan_only or off")
 
     try:
-        temperature_value = int(temperature)
+        temperature_value = int(float(temperature))
         if temperature_value < MIN_TEMP or temperature_value > MAX_TEMP:
             raise Exception()
 
@@ -110,4 +106,6 @@ def send_state(power, mode, temperature, fan):
         raise RemoteException("Invalid fan value... Possible values: Auto, Quiet, 1, 2, 3, 4 or 5.")
 
     daikinencoder.update_sum(state_raw, state)
-    send_code(daikinencoder.get_frames(state_raw))
+
+    print("Blasting Daikin state to head unit through IR!")
+    blast_code(daikinencoder.get_frames(state_raw))
