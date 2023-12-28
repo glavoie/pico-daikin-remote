@@ -5,11 +5,11 @@ import uctypes
 import daikinencoder
 
 # Code timings (In us)
-BIT_MARK         = 430
-ZERO             = 430
-ONE              = 1290
+BIT_MARK         = 425
+ZERO             = 445
+ONE              = 1295
 LEADER_SPACE     = 25400
-FRAME_START_HIGH = 3500
+FRAME_START_HIGH = 3490
 FRAME_START_LOW  = 1720
 GAP              = 34950
 
@@ -39,7 +39,7 @@ FAN_MAP = {
 }
 
 # IR carrier configuration
-DUTY_ON = 32768 # 1/2
+DUTY_ON = 16384 # 1/4
 DUTY_OFF = 0
 CARRIER_FREQ = 38000
 
