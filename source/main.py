@@ -6,7 +6,7 @@ import time
 
 from machine import Pin
 from umqtt.robust import MQTTClient
-from daikinremote import RemoteException, blast_state
+from daikinremote import RemoteException, send_daikin_state
 
 from config import SSID, PASSWORD, MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, NAME
 
@@ -23,22 +23,34 @@ DEFAULT_STATE = {
 }
 CURRENT_STATE = {}
 
-ID_PREFIX = "pico-daikin-remote"
-UNIQUE_ID = ID_PREFIX + "_" + ubinascii.hexlify(machine.unique_id()).decode("utf-8")
+FAN_MODES = ["Auto", "Quiet", "1", "2", "3", "4", "5"]
+MODES = ["auto", "off", "cool", "heat", "dry", "fan_only"]
+MIN_TEMP = 10
+MAX_TEMP = 32
 
-print("Unique ID: " + UNIQUE_ID)
+VENDOR = "glavoie84"
+ID_PREFIX = "pico-daikin-remote"
+BOARD_ID = ubinascii.hexlify(machine.unique_id()).decode("utf-8")
+UNIQUE_ID = "{0}_{1}".format(ID_PREFIX, BOARD_ID)
+
+
+def get_full_topic(topic):
+    return "{0}/{1}/{2}".format(VENDOR, UNIQUE_ID, topic).encode("utf-8")
+
+
+MQTT_FAN_MODE_COMMAND_TOPIC = get_full_topic("fan_mode/set")
+MQTT_FAN_MODE_STATE_TOPIC = get_full_topic("fan_mode")
+MQTT_MODE_COMMAND_TOPIC = get_full_topic("mode/set")
+MQTT_MODE_STATE_TOPIC = get_full_topic("mode")
+MQTT_TEMPERATURE_COMMAND_TOPIC = get_full_topic("temperature/set")
+MQTT_TEMPERATURE_STATE_TOPIC = get_full_topic("temperature")
+
+MQTT_DISCOVERY_TOPIC = "homeassistant/climate/{0}/config".format(UNIQUE_ID).encode(
+    "utf-8"
+)
 
 c = MQTTClient(UNIQUE_ID, MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD)
 
-MQTT_TOPIC_PREFIX = b"glavoie84/" + UNIQUE_ID
-
-MQTT_FAN_MODE_COMMAND_TOPIC = MQTT_TOPIC_PREFIX + b"/fan_mode/set"
-MQTT_FAN_MODE_STATE_TOPIC = MQTT_TOPIC_PREFIX + b"/fan_mode"
-MQTT_MODE_COMMAND_TOPIC = MQTT_TOPIC_PREFIX + b"/mode/set"
-MQTT_MODE_STATE_TOPIC = MQTT_TOPIC_PREFIX + b"/mode"
-MQTT_TEMPERATURE_COMMAND_TOPIC = MQTT_TOPIC_PREFIX + b"/temperature/set"
-MQTT_TEMPERATURE_STATE_TOPIC = MQTT_TOPIC_PREFIX + b"/temperature"
-MQTT_DISCOVERY_TOPIC = b"homeassistant/climate/" + UNIQUE_ID + b"/config"
 
 def get_hass_device():
     return {
@@ -46,12 +58,12 @@ def get_hass_device():
         "name": "Daikin IR Remote",
         "fan_mode_command_topic": MQTT_FAN_MODE_COMMAND_TOPIC,
         "fan_mode_state_topic": MQTT_FAN_MODE_STATE_TOPIC,
-        "fan_modes": ["Auto", "Quiet", "1", "2", "3", "4", "5"],
+        "fan_modes": FAN_MODES,
         "mode_command_topic": MQTT_MODE_COMMAND_TOPIC,
         "mode_state_topic": MQTT_MODE_STATE_TOPIC,
-        "modes": ["auto", "off", "cool", "heat", "dry", "fan_only"],
-        "max_temp": 32,
-        "min_temp": 10,
+        "modes": MODES,
+        "max_temp": MAX_TEMP,
+        "min_temp": MIN_TEMP,
         "precision": 1,
         "temperature_command_topic": MQTT_TEMPERATURE_COMMAND_TOPIC,
         "temperature_state_topic": MQTT_TEMPERATURE_STATE_TOPIC,
@@ -61,7 +73,7 @@ def get_hass_device():
             "name": NAME,
             "model": "pico-daikin-remote",
             "manufacturer": "glavoie84",
-        }
+        },
     }
 
 
@@ -115,8 +127,6 @@ def load_state():
     # Load state from JSON encoded file, check if file exists before.
     global CURRENT_STATE
 
-    device = get_hass_device()
-
     try:
         with open("state.json", "r") as f:
             loaded_state = json.load(f)
@@ -126,17 +136,17 @@ def load_state():
                 loaded_state["power"] = DEFAULT_STATE["power"]
             CURRENT_STATE["power"] = loaded_state["power"]
 
-            if loaded_state["mode"] not in device["modes"]:
+            if loaded_state["mode"] not in MODES:
                 loaded_state["mode"] = DEFAULT_STATE["mode"]
             CURRENT_STATE["mode"] = loaded_state["mode"]
 
-            if loaded_state["fan_mode"] not in device["fan_modes"]:
+            if loaded_state["fan_mode"] not in FAN_MODES:
                 loaded_state["fan_mode"] = DEFAULT_STATE["fan_mode"]
             CURRENT_STATE["fan_mode"] = loaded_state["fan_mode"]
 
             if (
-                int(float(loaded_state["temperature"])) < device["min_temp"]
-                or int(float(loaded_state["temperature"])) > device["max_temp"]
+                int(float(loaded_state["temperature"])) < MIN_TEMP
+                or int(float(loaded_state["temperature"])) > MAX_TEMP
             ):
                 loaded_state["temperature"] = DEFAULT_STATE["temperature"]
             CURRENT_STATE["temperature"] = loaded_state["temperature"]
@@ -145,10 +155,10 @@ def load_state():
     except Exception as e:
         print("Error while loading state, resetting to default: " + str(e))
         # Copy default state values into the current state
-        CURRENT_STATE['power'] = DEFAULT_STATE['power']
-        CURRENT_STATE['mode'] = DEFAULT_STATE['mode']
-        CURRENT_STATE['fan_mode'] = DEFAULT_STATE['fan_mode']
-        CURRENT_STATE['temperature'] = DEFAULT_STATE['temperature']
+        CURRENT_STATE["power"] = DEFAULT_STATE["power"]
+        CURRENT_STATE["mode"] = DEFAULT_STATE["mode"]
+        CURRENT_STATE["fan_mode"] = DEFAULT_STATE["fan_mode"]
+        CURRENT_STATE["temperature"] = DEFAULT_STATE["temperature"]
 
 
 def start_mqtt_client():
@@ -156,7 +166,9 @@ def start_mqtt_client():
 
     c.connect()
 
-    print("Publishing device discovery message to MQTT...")
+    print(
+        "Publishing device discovery message to MQTT: {0}".format(MQTT_DISCOVERY_TOPIC)
+    )
     c.publish(MQTT_DISCOVERY_TOPIC, json.dumps(get_hass_device()), True)
 
     time.sleep(1)
@@ -177,9 +189,11 @@ def start_mqtt_client():
 
     print("MQTT client started!")
 
+
 def close_mqtt_client():
     print("Closing MQTT client...")
     c.disconnect()
+
 
 def process_message(topic, msg):
     global CURRENT_STATE
@@ -204,11 +218,11 @@ def process_message(topic, msg):
         print("Unknown topic...")
 
     try:
-        blast_state(
+        send_daikin_state(
             CURRENT_STATE["power"],
             CURRENT_STATE["mode"],
             CURRENT_STATE["temperature"],
-            CURRENT_STATE["fan_mode"]
+            CURRENT_STATE["fan_mode"],
         )
 
         save_state()
@@ -241,5 +255,6 @@ def main():
     except KeyboardInterrupt:
         print("Keyboard interrupt, exiting...")
         close_mqtt_client()
+
 
 main()
